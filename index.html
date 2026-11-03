@@ -350,6 +350,7 @@ document.addEventListener('visibilitychange', () => { if (document.hidden && mod
 const inR = (p, b) => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
 const hasPad = () => H > SH + 4;
 const touchOn = () => touchSeen || (window.matchMedia && matchMedia('(pointer:coarse)').matches);
+const pauseBtnRect = () => ({ x: W - 86, y: SH - 40, w: 38, h: 34 });
 const muteRect = () => ({ x: W - 40, y: (mode === 'play' ? SH : H) - 38, w: 30, h: 28 });
 // Control zones for the road stage: a pad below the stage when there is room, otherwise overlay buttons.
 function roadZones() {
@@ -369,6 +370,7 @@ cv.addEventListener('pointerdown', e => {
   const p = toCanvas(e);
   try { cv.setPointerCapture(e.pointerId); } catch (err) {}
   if (inR(p, muteRect())) { SFX.setMuted(!SFX.muted); return; }
+  if (mode === 'play' && !paused && inR(p, pauseBtnRect())) { togglePause(); return; }
   const pm = { x: p.x - MOX, y: p.y - MOY };      // menu (design-space) coordinates
   if (mode === 'title') { for (let i = 0; i < MENU.length; i++) if (inR(pm, menuRect(i))) { menuSel = i; MENU[i].a(); return; } return; }
   if (mode === 'lb') {
@@ -1057,6 +1059,13 @@ function drawPad() {
     drawBtn(r, 'TAP = JUMP', R.holding, Math.min(34, W / 14), 'HOLD or DOUBLE-TAP = SPRINT');
   }
 }
+function drawPauseIcon() {
+  const r = pauseBtnRect(); ctx.save(); ctx.globalAlpha = 0.9;
+  ctx.fillStyle = 'rgba(6,18,12,.7)'; rr(r.x, r.y, r.w, r.h, 8); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.fillRect(r.x + 12, r.y + 8, 5, r.h - 16); ctx.fillRect(r.x + 21, r.y + 8, 5, r.h - 16);
+  ctx.restore();
+}
 function drawMuteIcon() {
   const r = muteRect(); ctx.save(); ctx.globalAlpha = 0.85;
   ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(r.x + 4, r.y + 10); ctx.lineTo(r.x + 10, r.y + 10); ctx.lineTo(r.x + 17, r.y + 4); ctx.lineTo(r.x + 17, r.y + 24); ctx.lineTo(r.x + 10, r.y + 18); ctx.lineTo(r.x + 4, r.y + 18); ctx.closePath(); ctx.fill();
@@ -1159,6 +1168,7 @@ function renderOverlays() {
     drawTouchControls();
   }
   drawMuteIcon();
+  if (!paused) drawPauseIcon();
 }
 
 function drawPanel(x, y, w, h, title, col) {
