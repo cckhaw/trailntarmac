@@ -32,11 +32,13 @@
    Stage 2: road cycling (cadence / drafting / slipstream breakaway)
    ====================================================================== */
 
-// Logical canvas size. The stage is always SH tall; W/H adapt to the screen (see resize()).
-//  - wide screens (>=16:9): W grows, H = 540            - 4:3 tablets: W = 960, extra height below the stage becomes a control pad
-//  - portrait (phones / tablets): narrow stage on top, big touch pad underneath
-let W = 960, H = 540, PORTRAIT = false, MOX = 0, MOY = 0, MINF = 8;
-const SH = 540;
+// Logical canvas size - the game always fills the whole screen; W/H adapt to its aspect ratio (see resize()).
+//  - wide screens (>=16:9): W grows, H = 540        - 4:3 tablets: W = 960, H grows
+//  - portrait (phones / tablets): narrow W, tall H. The 540-tall action band is centred (WY above / below it)
+//    and the scenery is extended up and down, so there is no dead space. Touch: tap anywhere, swipe for lanes.
+let W = 960, H = 540, PORTRAIT = false, MOX = 0, MOY = 0, MINF = 8, WY = 0;
+const BASE_H = 540;
+let SH = 540;                                                  // stage height (= full canvas height)
 const cv = document.getElementById('c');
 const ctx = cv.getContext('2d');
 const qs = new URLSearchParams(location.search);
@@ -63,10 +65,11 @@ function resize() {
   const cw = Math.max(2, r.width), ch = Math.max(2, r.height), asp = cw / ch;
   if (asp >= 1) {
     PORTRAIT = false;
-    if (asp >= 16 / 9) { W = Math.round(SH * asp); H = SH; } else { W = 960; H = 960 / asp; }
-  } else { PORTRAIT = true; H = Math.max(860, 560 / asp); W = H * asp; }
-  MOX = PORTRAIT ? 0 : (W - 960) / 2; MOY = PORTRAIT ? 0 : (H - SH) / 2;
-  RUN_X = W < 700 ? 100 : 150; PX = W < 700 ? 150 : 250;
+    if (asp >= 16 / 9) { W = Math.round(BASE_H * asp); H = BASE_H; } else { W = 960; H = 960 / asp; }
+  } else { PORTRAIT = true; H = Math.max(860, 480 / asp); W = H * asp; }
+  SH = H; WY = Math.max(0, (H - BASE_H) / 2);
+  MOX = PORTRAIT ? 0 : (W - 960) / 2; MOY = PORTRAIT ? 0 : (H - BASE_H) / 2;
+  RUN_X = W < 700 ? 95 : 150; PX = W < 700 ? 140 : 250;
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
   cv.width = Math.max(2, Math.round(cw * dpr)); cv.height = Math.max(2, Math.round(ch * dpr));
   scale = cv.width / W;
@@ -235,7 +238,7 @@ const MENU = [
 ];
 const menuRect = i => PORTRAIT ? { x: W / 2 - Math.min(210, W / 2 - 20), y: 566 + i * 60, w: Math.min(420, W - 40), h: 50 } : { x: 270, y: 387 + i * 28, w: 420, h: 27 };
 const PAUSE_ITEMS = ['RESUME', 'RESTART', 'QUIT TO MAIN MENU'];
-const pauseRect = i => ({ x: W / 2 - 170, y: 270 + i * 50, w: 340, h: 40 });
+const pauseRect = i => ({ x: W / 2 - 170, y: 270 + i * 50 + WY, w: 340, h: 40 });
 function pauseAct(i) { if (i === 0) togglePause(); else if (i === 1) { const m = R.mode; startGame(m); } else quitToMenu(); }
 const LBT = i => { if (PORTRAIT) { const tw = (W - 28 - 16) / 3; return { x: 14 + i * (tw + 8), y: 72, w: tw, h: 40 }; } return { x: 90 + i * 270, y: 62, w: 250, h: 34 }; };
 const lbBack = () => PORTRAIT ? { x: W / 2 - 110, y: 790, w: 220, h: 48 } : { x: 380, y: 492, w: 200, h: 34 };
@@ -348,19 +351,13 @@ document.addEventListener('visibilitychange', () => { if (document.hidden && mod
 
 /* ---- pointer / touch ---- */
 const inR = (p, b) => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
-const hasPad = () => H > SH + 4;
 const touchOn = () => touchSeen || (window.matchMedia && matchMedia('(pointer:coarse)').matches);
-const pauseBtnRect = () => ({ x: W - 86, y: SH - 40, w: 38, h: 34 });
-const muteRect = () => ({ x: W - 40, y: (mode === 'play' ? SH : H) - 38, w: 30, h: 28 });
-// Control zones for the road stage: a pad below the stage when there is room, otherwise overlay buttons.
+const pauseBtnRect = () => ({ x: W - 86, y: H - 40, w: 38, h: 34 });
+const muteRect = () => ({ x: W - 40, y: H - 38, w: 30, h: 28 });
+// Overlay buttons for the road stage (touch). Everything else on screen is a pedal tap; swipe up/down also changes lane.
 function roadZones() {
-  if (hasPad()) {
-    const m = 10, py = SH + m, ph = H - SH - 2 * m, lw = Math.min(150, W * 0.22), bw = Math.min(170, W * 0.26), hh = (ph - m) / 2;
-    const x0 = m + lw + m, x1 = W - m - bw - m, mid = (x0 + x1) / 2;
-    return { pad: true, up: { x: m, y: py, w: lw, h: hh }, down: { x: m, y: py + hh + m, w: lw, h: hh },
-      boost: { x: W - m - bw, y: py, w: bw, h: ph }, pl: { x: x0, y: py, w: mid - x0 - 4, h: ph }, pr: { x: mid + 4, y: py, w: x1 - mid - 4, h: ph }, mid };
-  }
-  return { pad: false, up: { x: 18, y: 332, w: 110, h: 84 }, down: { x: 18, y: 424, w: 110, h: 84 }, boost: { x: W - 190, y: 408, w: 170, h: 92 }, mid: W / 2 };
+  return { up: { x: 14, y: H - 214, w: 92, h: 92 }, down: { x: 14, y: H - 114, w: 92, h: 92 },
+           boost: { x: W - 14 - 132, y: H - 168, w: 132, h: 100 }, mid: W / 2 };
 }
 function toCanvas(e) { const r = cv.getBoundingClientRect(); return { x: (e.clientX - r.left) / r.width * W, y: (e.clientY - r.top) / r.height * H }; }
 
@@ -387,12 +384,20 @@ cv.addEventListener('pointerdown', e => {
     else if (inR(p, z.down)) { ptrs.set(e.pointerId, 'down'); laneMove(1); }
     else if (inR(p, z.boost)) { ptrs.set(e.pointerId, 'boost'); setBoost(true); }
     else {
-      ptrs.set(e.pointerId, 'pad'); R.rd.holdPtrs = (R.rd.holdPtrs || 0) + 1;
+      ptrs.set(e.pointerId, 'pad'); R.rd.holdPtrs = (R.rd.holdPtrs || 0) + 1; swipes.set(e.pointerId, { x: p.x, y: p.y, done: false });
       padTap(p.x < z.mid ? 0 : 1);
     }
   }
 }, { passive: false });
+const swipes = new Map();
+cv.addEventListener('pointermove', e => {
+  const sw = swipes.get(e.pointerId);
+  if (!sw || sw.done || !R || R.phase !== 'road' || paused) return;
+  const p = toCanvas(e), dy = p.y - sw.y, dx = p.x - sw.x;
+  if (Math.abs(dy) > 36 && Math.abs(dy) > Math.abs(dx) * 1.2) { sw.done = true; laneMove(dy < 0 ? -1 : 1); }
+});
 function ptrEnd(e) {
+  swipes.delete(e.pointerId);
   const k = ptrs.get(e.pointerId); ptrs.delete(e.pointerId);
   if (!k || !R) return;
   if (k === 'jump') trailRelease();
@@ -1030,7 +1035,7 @@ function drawHUD() {
   if (low && (R.phase === 'trail' || R.phase === 'road') && Math.floor(tNow * 3) % 2 === 0) txt('! LOW STAMINA !', W / 2, HH + 20, 20, '#ff5d5d', 'center');
 }
 function drawBtn(r, label, on, size = 26, sub) {
-  ctx.globalAlpha = on ? 0.95 : 0.78; ctx.fillStyle = on ? '#1d5a3a' : '#10261a'; rr(r.x, r.y, r.w, r.h, 16); ctx.fill();
+  ctx.globalAlpha = on ? 0.9 : 0.55; ctx.fillStyle = on ? '#1d5a3a' : '#10261a'; rr(r.x, r.y, r.w, r.h, 16); ctx.fill();
   ctx.strokeStyle = on ? '#7df9ff' : 'rgba(255,255,255,.7)'; ctx.lineWidth = 3; ctx.stroke(); ctx.globalAlpha = 1;
   txt(label, r.x + r.w / 2, r.y + r.h / 2 - (sub ? 10 : 0), size, '#fff', 'center');
   if (sub) txt(sub, r.x + r.w / 2, r.y + r.h / 2 + 16, 12, '#cfe8d6', 'center', fM, false);
@@ -1038,26 +1043,8 @@ function drawBtn(r, label, on, size = 26, sub) {
 // Overlay buttons (wide phones, no pad below the stage)
 function drawTouchControls() {
   if (!touchOn() || R.phase !== 'road') return;
-  const z = roadZones(); if (z.pad) return;
+  const z = roadZones();
   drawBtn(z.up, '\u25B2', false, 30); drawBtn(z.down, '\u25BC', false, 30); drawBtn(z.boost, 'BOOST', R.rd.boostOn, 22);
-}
-// Control pad under the stage (portrait phones/tablets and 4:3 tablets); also works with a mouse
-function drawPad() {
-  ctx.fillStyle = '#0b1a12'; ctx.fillRect(0, SH, W, H - SH);
-  ctx.fillStyle = '#1d4a30'; ctx.fillRect(0, SH, W, 3);
-  if (!R) return;
-  if (R.phase === 'road' || R.phase === 'finish') {
-    const z = roadZones(), rd = R.rd, ready = DUR - R.stageT <= BOOST_WINDOW && rd.slip >= 8;
-    drawBtn(z.up, '\u25B2', false, 30, 'LANE'); drawBtn(z.down, '\u25BC', false, 30, 'LANE');
-    drawBtn(z.boost, 'BOOST', rd.boostOn, 22, ready ? 'READY!' : 'FINAL 15s');
-    drawBtn(z.pl, 'PEDAL', rd.fl[0] > 0, 24, 'LEFT'); drawBtn(z.pr, 'PEDAL', rd.fl[1] > 0, 24, 'RIGHT');
-    const x0 = z.pl.x + 14, x1 = z.pr.x + z.pr.w - 14;
-    bar(x0, z.pl.y + 12, x1 - x0, 12, rd.cad, '#2aa9ff', '#ffd23f');
-    txt('CADENCE', (x0 + x1) / 2, z.pl.y + 38, 11, '#cfe8d6', 'center', fM, false);
-  } else {
-    const r = { x: 10, y: SH + 10, w: W - 20, h: H - SH - 20 };
-    drawBtn(r, 'TAP = JUMP', R.holding, Math.min(34, W / 14), 'HOLD or DOUBLE-TAP = SPRINT');
-  }
 }
 function drawPauseIcon() {
   const r = pauseBtnRect(); ctx.save(); ctx.globalAlpha = 0.9;
@@ -1089,6 +1076,13 @@ function hint(lines, a) {
 }
 
 function renderPlay() {
+  const trailPh = R.phase === 'trail' || R.phase === 'transition' || R.phase === 'tfinish';
+  if (WY > 0) {                                   // extra sky above the action band
+    ctx.fillStyle = trailPh ? '#5fb6f0' : '#4fa8ee'; ctx.fillRect(0, 0, W, WY + 2);
+    const sc = trailPh ? R.trailPx : R.rd.d;
+    for (let i = 0; i < 3; i++) cloud(((i * 260 - sc * 0.025 + 1040) % 1100) - 150, WY * (0.25 + 0.3 * i), 1.1 + i * 0.2);
+  }
+  ctx.save(); ctx.translate(0, WY);
   if (R.phase === 'trail' || R.phase === 'transition' || R.phase === 'tfinish') {
     const scroll = R.trailPx;
     drawTrailScene(scroll);
@@ -1103,6 +1097,11 @@ function renderPlay() {
   } else {
     const rd = R.rd, scroll = rd.d;
     drawRoadScene(scroll);
+    if (WY > 0) {                                  // grass verge below the road
+      ctx.fillStyle = '#2b7a43'; ctx.fillRect(0, 539, W, WY + 8 + (H - BASE_H));
+      ctx.fillStyle = '#26703d'; const gs = 110, g0 = Math.floor(scroll / gs);
+      for (let i = -1; i < W / gs + 2; i += 2) { const x = (g0 + i) * gs - scroll; ctx.fillRect(x, 539, gs, WY + 8 + (H - BASE_H)); }
+    }
     if (R.phase === 'road' || R.phase === 'finish') {
       const remPx = Math.max(0, DUR - R.stageT) * rd.spd;
       if (R.phase === 'road' && DUR - R.stageT < 6) drawGantry(PX + remPx, 'finish');
@@ -1134,13 +1133,15 @@ function renderPlay() {
     ctx.globalAlpha = clamp(1.3 - q.t, 0, 1); txt(q.text, q.x, q.y - q.t * 50, q.size, q.color, 'center');
   }
   ctx.globalAlpha = 1;
+  ctx.restore();
 }
 
 function renderOverlays() {
   drawHUD();
+  ctx.save(); ctx.translate(0, WY);
   if (R.phase === 'trail') {
     banner('TRAIL RUNNING', 'GO GO GO!', 1.6 - R.stageT / 1.2);
-    hint(['TAP / SPACE : JUMP    HOLD or DOUBLE-TAP : SPRINT', 'Sprinting drains stamina - rest or clear jumps'], 1 - (R.hintT - 3.5) / 1.2);
+    hint([touchOn() ? 'TAP anywhere : JUMP   HOLD or DOUBLE-TAP : SPRINT' : 'TAP / SPACE : JUMP    HOLD or DOUBLE-TAP : SPRINT', 'Sprinting drains stamina - rest or clear jumps'], 1 - (R.hintT - 3.5) / 1.2);
   } else if (R.phase === 'transition') {
     ctx.fillStyle = 'rgba(6,18,12,.72)'; ctx.fillRect(0, 110, W, 320);
     const n = clamp(Math.ceil(TRANSITION_T - R.trT), 1, 3);
@@ -1153,20 +1154,21 @@ function renderOverlays() {
   } else if (R.phase === 'road') {
     const rd = R.rd, rem = DUR - R.stageT;
     banner('ROAD CYCLING', 'PEDAL! DRAFT BEHIND RIVALS', 1.6 - R.stageT / 1.2, '#ffd23f');
-    hint(['TAP PEDALS / SPACE / ← → to pedal  (hold = steady)', '↑ ↓ lanes  |  sit behind rivals to DRAFT', 'Last 15s: hold BOOST / SHIFT for the BREAKAWAY'], 1 - (R.hintT - 5) / 1.2);
+    hint(touchOn() ? ['TAP anywhere to pedal  (hold = steady)', 'SWIPE up / down (or ▲ ▼) : change lane', 'Sit behind rivals to DRAFT - BOOST in last 15s'] : ['TAP SPACE / ← → to pedal  (hold = steady)', '↑ ↓ lanes  |  sit behind rivals to DRAFT', 'Last 15s: hold SHIFT / B for the BREAKAWAY'], 1 - (R.hintT - 5) / 1.2);
     if (rem <= BOOST_WINDOW && rem > BOOST_WINDOW - 2.5) banner('FINAL STRETCH', null, 1, '#7df9ff');
     if (rem <= BOOST_WINDOW && rd.slip >= 15 && !rd.boosting && Math.floor(tNow * 4) % 2 === 0)
-      txt(hasPad() || touchOn() ? 'BREAKAWAY READY - HOLD BOOST!' : 'BREAKAWAY READY - HOLD SHIFT / B', W / 2, W < 700 ? 140 : 126, 18, '#7df9ff', 'center');
+      txt(touchOn() ? 'BREAKAWAY READY - HOLD BOOST!' : 'BREAKAWAY READY - HOLD SHIFT / B', W / 2, W < 700 ? 140 : 126, 18, '#7df9ff', 'center');
     if (rd.boostMsgT > 0) txt(rem > BOOST_WINDOW ? 'BREAKAWAY UNLOCKS IN FINAL 15s' : 'BUILD SLIPSTREAM FIRST - DRAFT!', W / 2, W < 700 ? 166 : 150, 17, '#ffb04d', 'center');
     if (rd.drafting) txt('DRAFTING', PX + 10, laneAt(rd.laneF, LANE_Y) - 108 * laneAt(rd.laneF, LANE_S), 14, '#d6f6ff', 'center', fM);
     // cadence gauge (keyboard play with no pad below the stage)
-    if (!touchOn() && !hasPad()) {
-      ctx.fillStyle = 'rgba(6,18,12,.6)'; rr(W - 250, SH - 54, 200, 40, 10); ctx.fill();
-      txt('CADENCE', W - 240, SH - 34, 12, '#cfe8d6', 'left', fM, false);
-      bar(W - 170, SH - 42, 112, 16, rd.cad, '#2aa9ff', '#ffd23f');
+    if (!touchOn()) {
+      ctx.fillStyle = 'rgba(6,18,12,.6)'; rr(W - 250, BASE_H - 54, 200, 40, 10); ctx.fill();
+      txt('CADENCE', W - 240, BASE_H - 34, 12, '#cfe8d6', 'left', fM, false);
+      bar(W - 170, BASE_H - 42, 112, 16, rd.cad, '#2aa9ff', '#ffd23f');
     }
-    drawTouchControls();
   }
+  ctx.restore();
+  drawTouchControls();
   drawMuteIcon();
   if (!paused) drawPauseIcon();
 }
@@ -1190,7 +1192,7 @@ function drawBoard(x, y, w, rows, hl, rowH, size) {
 }
 
 function menuDim(a) {
-  if (H > SH) { ctx.fillStyle = '#10261a'; ctx.fillRect(0, SH, W, H - SH); }
+  if (H > BASE_H) { ctx.fillStyle = '#10261a'; ctx.fillRect(0, BASE_H, W, H - BASE_H); }
   ctx.fillStyle = 'rgba(4,14,9,' + a + ')'; ctx.fillRect(0, 0, W, H);
 }
 function renderOver() {
@@ -1365,8 +1367,8 @@ function drawTitleP() {
     txt(title, px + 16, y + 24, 16, col, 'left');
     lines.forEach((l, i) => txt(l, px + 16, y + 54 + i * 24, 13, '#fff', 'left', fM, false));
   };
-  panel(286, '#46d07c', '1  TRAIL RUNNING', ['TAP : jump logs & rocks', 'HOLD / DOUBLE-TAP : sprint', 'Sprint drains STAMINA - 0 = trip!']);
-  panel(424, '#f2b705', '2  ROAD CYCLING', ['TAP PEDALS (L / R) : pedal', 'LANE ARROWS : change lane', 'DRAFT rivals, BOOST at the end']);
+  panel(286, '#46d07c', '1  TRAIL RUNNING', ['TAP anywhere : jump', 'HOLD / DOUBLE-TAP : sprint', 'Sprint drains STAMINA - 0 = trip!']);
+  panel(424, '#f2b705', '2  ROAD CYCLING', ['TAP anywhere : pedal', 'SWIPE up / down : change lane', 'DRAFT rivals, BOOST at the end']);
   MENU.forEach((m, i) => {
     const r = menuRect(i), sel = i === menuSel;
     if (sel) { ctx.fillStyle = 'rgba(230,57,70,.9)'; rr(r.x, r.y, r.w, r.h, 16); ctx.fill(); ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 2; ctx.stroke(); }
@@ -1429,21 +1431,18 @@ function render() {
   else if (mode === 'lb') renderLB();
   else if (mode === 'over' && OV) renderOver();
   else if (R) {
-    ctx.beginPath(); ctx.rect(0, 0, W, SH); ctx.clip();   // everything in the stage stays inside the stage
     renderPlay(); ctx.restore(); ctx.save();
-    ctx.beginPath(); ctx.rect(0, 0, W, SH); ctx.clip();
     renderOverlays(); ctx.restore(); ctx.save();
-    if (hasPad()) drawPad();
     if (paused) {
       ctx.fillStyle = 'rgba(4,14,9,.78)'; ctx.fillRect(0, 0, W, H);
-      txt('PAUSED', W / 2, 200, 56, '#ffe66d', 'center');
+      txt('PAUSED', W / 2, 200 + WY, 56, '#ffe66d', 'center');
       PAUSE_ITEMS.forEach((t, i) => {
         const r = pauseRect(i), sel = i === pauseSel;
         ctx.fillStyle = sel ? '#e63946' : 'rgba(255,255,255,.12)'; rr(r.x, r.y, r.w, r.h, 20); ctx.fill();
         ctx.strokeStyle = sel ? '#fff' : 'rgba(255,255,255,.4)'; ctx.lineWidth = 2; ctx.stroke();
         txt(t, W / 2, r.y + r.h / 2 + 1, 18, '#fff', 'center');
       });
-      txt('\u2191\u2193 + ENTER  |  P resume  |  Q quit to menu', W / 2, 440, 13, '#cfe8d6', 'center', fM, false);
+      txt('\u2191\u2193 + ENTER  |  P resume  |  Q quit to menu', W / 2, 440 + WY, 13, '#cfe8d6', 'center', fM, false);
     }
   }
   ctx.restore();
