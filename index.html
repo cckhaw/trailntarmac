@@ -59,28 +59,38 @@ window.addEventListener('resize', resize);
 resize();
 
 /* ---------------------------------------------------------------- storage */
-const LS_SCORES = 'trailtarmac.scores.v1', LS_INIT = 'trailtarmac.initials.v1';
+const LS_INIT = 'trailtarmac.initials.v1';
 const mem = {};
 function lsGet(k) { try { const v = localStorage.getItem(k); if (v !== null) return v; } catch (e) {} return mem[k] ?? null; }
 function lsSet(k, v) { mem[k] = v; try { localStorage.setItem(k, v); } catch (e) {} }
-function loadScores() {
+const MODES = ['full', 'trail', 'road'];
+const MODE_NAME = { full: 'FULL RACE', trail: 'TRAIL RUNNING', road: 'ROAD CYCLING' };
+const lsKey = m => 'trailtarmac.scores.v2.' + m;
+function parseScores(raw) {
   try {
-    const a = JSON.parse(lsGet(LS_SCORES));
+    const a = JSON.parse(raw);
     if (Array.isArray(a)) return a.filter(e => e && typeof e.n === 'string' && Number.isFinite(e.s)).sort((x, y) => y.s - x.s).slice(0, 10);
   } catch (e) {}
   return [];
 }
-let scores = loadScores();
-const saveScores = () => lsSet(LS_SCORES, JSON.stringify(scores));
-// "Simulated global" board: seeded rivals from around the world, merged with this player's submissions.
-const GLOBAL_SEED = [
-  { n: 'KOM', s: 6900 }, { n: 'ACE', s: 5800 }, { n: 'FOX', s: 4700 }, { n: 'PEL', s: 3800 }, { n: 'TRL', s: 3000 }
-];
-function globalBoard() {
-  return GLOBAL_SEED.map(e => ({ ...e })).concat(scores.map(e => ({ n: e.n, s: e.s, me: e })))
+function loadScores(m) {
+  let a = parseScores(lsGet(lsKey(m)));
+  if (!a.length && m === 'full') a = parseScores(lsGet('trailtarmac.scores.v1'));   // migrate old single board
+  return a;
+}
+const scoresBy = { full: loadScores('full'), trail: loadScores('trail'), road: loadScores('road') };
+const saveScores = m => lsSet(lsKey(m), JSON.stringify(scoresBy[m]));
+// "Simulated global" boards: seeded riders from around the world, merged with this player's submissions.
+const GLOBAL_SEEDS = {
+  full:  [{ n: 'KOM', s: 6900 }, { n: 'ACE', s: 5800 }, { n: 'FOX', s: 4700 }, { n: 'PEL', s: 3800 }, { n: 'TRL', s: 3000 }],
+  trail: [{ n: 'RUN', s: 3600 }, { n: 'FOX', s: 3100 }, { n: 'ELK', s: 2600 }, { n: 'MUD', s: 2100 }, { n: 'ROK', s: 1600 }],
+  road:  [{ n: 'KOM', s: 3500 }, { n: 'PEL', s: 3000 }, { n: 'ACE', s: 2500 }, { n: 'GEO', s: 2000 }, { n: 'TTT', s: 1500 }]
+};
+function globalBoard(m) {
+  return GLOBAL_SEEDS[m].map(e => ({ ...e })).concat(scoresBy[m].map(e => ({ n: e.n, s: e.s, me: e })))
     .sort((a, b) => b.s - a.s).slice(0, 5);
 }
-const bestScore = () => Math.max(scores.length ? scores[0].s : 0, 0);
+const bestScore = m => scoresBy[m].length ? scoresBy[m][0].s : 0;
 
 /* ---------------------------------------------------------------- audio (Web Audio only) */
 const SFX = {
@@ -141,7 +151,8 @@ const SFX = {
 try { SFX.muted = lsGet('trailtarmac.muted') === '1'; } catch (e) {}
 
 /* ---------------------------------------------------------------- game state */
-let mode = 'title';           // title | play | over
+let mode = 'title';           // title | play | over | lb
+let menuSel = 0, lbTab = 0, pauseSel = 0;
 let paused = false;
 let tNow = 0, shake = 0, touchSeen = false, titleT = 0;
 let R = null;                 // current run
@@ -150,9 +161,9 @@ const keys = {};
 const parts = [], pops = [];
 const ptrs = new Map();
 
-function newRun() {
+function newRun(m) {
   R = {
-    phase: 'trail', stageT: 0, trT: 0, finT: 0, alarmT: 0, hintT: 0,
+    mode: m || 'full', phase: 'trail', stageT: 0, trT: 0, finT: 0, alarmT: 0, hintT: 0,
     // scores
     trailPx: 0, roadPx: 0, jumps: 0, jumpPts: 0, sprintPts: 0, draftPts: 0, overPts: 0, boostPts: 0, stamPts: 0, penalty: 0,
     stamina: 100, combo: 0, bestCombo: 0, trips: 0, overtakes: 0,
@@ -184,11 +195,31 @@ function mkRival(rd, off, init) {
   };
 }
 
-function startGame() {
+function startGame(m) {
   SFX.init(); SFX.start();
-  newRun(); mode = 'play'; paused = false; OV = null;
+  newRun(m || 'full'); mode = 'play'; paused = false; OV = null;
   parts.length = 0; pops.length = 0; ptrs.clear();
+  if (R.mode === 'road') beginRoad(false);
 }
+function beginRoad(carry) {
+  R.phase = 'road'; R.stageT = 0; R.hintT = 0; R.rd = newRoad(); R.rd.holdPtrs = 0;
+  R.stamina = carry ? Math.min(100, R.stamina + 40) : 100; R.obs.length = 0; pops.length = 0; parts.length = 0;
+}
+function quitToMenu() {
+  paused = false; mode = 'title'; R = null; OV = null; ptrs.clear(); parts.length = 0; pops.length = 0; menuSel = 0; SFX.blip();
+}
+const MENU = [
+  { t: 'FULL RACE   (TRAIL > ROAD)', a: () => startGame('full') },
+  { t: 'TRAIL RUNNING ONLY', a: () => startGame('trail') },
+  { t: 'ROAD CYCLING ONLY', a: () => startGame('road') },
+  { t: 'LEADERBOARDS', a: () => { mode = 'lb'; lbTab = 0; SFX.blip(); } }
+];
+const menuRect = i => ({ x: W / 2 - 210, y: 387 + i * 28, w: 420, h: 27 });
+const PAUSE_ITEMS = ['RESUME', 'RESTART', 'QUIT TO MAIN MENU'];
+const pauseRect = i => ({ x: W / 2 - 170, y: 270 + i * 50, w: 340, h: 40 });
+function pauseAct(i) { if (i === 0) togglePause(); else if (i === 1) { const m = R.mode; startGame(m); } else quitToMenu(); }
+const LBT = i => ({ x: 90 + i * 270, y: 62, w: 250, h: 34 });
+const LB_BACK = { x: W / 2 - 100, y: 492, w: 200, h: 34 };
 
 /* ---------------------------------------------------------------- scoring */
 const distM = () => (R.trailPx + R.roadPx) / PX_PER_M;
@@ -238,7 +269,7 @@ const roadHold = () => !!(keys.Space || R && R.rd && R.rd.holdPtrs > 0);
 
 function togglePause() {
   if (mode !== 'play') return;
-  paused = !paused; SFX.blip();
+  paused = !paused; SFX.blip(); pauseSel = 0;
   if (paused) { R.holding = false; if (R.rd) R.rd.boostOn = false; }
 }
 
@@ -246,10 +277,29 @@ const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 function onKeyDown(e) {
   const c = e.code;
   if (c === 'KeyM' && !(mode === 'over' && OV && OV.mode === 'entry')) { SFX.setMuted(!SFX.muted); return; }
-  if (mode === 'title') { if (c === 'Space' || c === 'Enter') startGame(); return; }
+  if (mode === 'title') {
+    if (c === 'ArrowUp' || c === 'KeyW') { menuSel = (menuSel + MENU.length - 1) % MENU.length; SFX.move(); }
+    else if (c === 'ArrowDown' || c === 'KeyS') { menuSel = (menuSel + 1) % MENU.length; SFX.move(); }
+    else if (c === 'Enter' || c === 'Space' || c === 'NumpadEnter') MENU[menuSel].a();
+    else if (/^(Digit|Numpad)[1-4]$/.test(c)) { menuSel = +c.slice(-1) - 1; MENU[menuSel].a(); }
+    return;
+  }
+  if (mode === 'lb') {
+    if (c === 'ArrowLeft' || c === 'KeyA') { lbTab = (lbTab + 2) % 3; SFX.move(); }
+    else if (c === 'ArrowRight' || c === 'KeyD' || c === 'Tab') { lbTab = (lbTab + 1) % 3; SFX.move(); }
+    else if (/^(Digit|Numpad)[1-3]$/.test(c)) { lbTab = +c.slice(-1) - 1; SFX.move(); }
+    else if (c === 'Escape' || c === 'Enter' || c === 'Space' || c === 'Backspace') { mode = 'title'; SFX.blip(); }
+    return;
+  }
   if (mode === 'over') { overKey(c, e.key); return; }
   if (c === 'KeyP' || c === 'Escape') { togglePause(); return; }
-  if (paused) { if (c === 'Space' || c === 'Enter') togglePause(); return; }
+  if (paused) {
+    if (c === 'ArrowUp' || c === 'KeyW') { pauseSel = (pauseSel + 2) % 3; SFX.move(); }
+    else if (c === 'ArrowDown' || c === 'KeyS') { pauseSel = (pauseSel + 1) % 3; SFX.move(); }
+    else if (c === 'Enter' || c === 'Space') pauseAct(pauseSel);
+    else if (c === 'KeyQ') quitToMenu();
+    return;
+  }
   if (R.phase === 'trail') {
     if (c === 'Space' || c === 'ArrowUp' || c === 'KeyW') trailPress();
   } else if (R.phase === 'road') {
@@ -292,9 +342,14 @@ cv.addEventListener('pointerdown', e => {
   const p = toCanvas(e);
   try { cv.setPointerCapture(e.pointerId); } catch (err) {}
   if (inR(p, BTN.mute)) { SFX.setMuted(!SFX.muted); return; }
-  if (mode === 'title') { startGame(); return; }
+  if (mode === 'title') { for (let i = 0; i < MENU.length; i++) if (inR(p, menuRect(i))) { menuSel = i; MENU[i].a(); return; } return; }
+  if (mode === 'lb') {
+    for (let i = 0; i < 3; i++) if (inR(p, LBT(i))) { lbTab = i; SFX.move(); return; }
+    if (inR(p, LB_BACK)) { mode = 'title'; SFX.blip(); }
+    return;
+  }
   if (mode === 'over') { overClick(p); return; }
-  if (paused) { togglePause(); return; }
+  if (paused) { for (let i = 0; i < 3; i++) if (inR(p, pauseRect(i))) { pauseSel = i; pauseAct(i); return; } return; }
   if (R.phase === 'trail') { ptrs.set(e.pointerId, 'jump'); trailPress(); }
   else if (R.phase === 'road') {
     if (inR(p, BTN.up)) { ptrs.set(e.pointerId, 'up'); laneMove(-1); }
@@ -402,9 +457,14 @@ function updateTrail(dt) {
   R.obs = R.obs.filter(o => o.x > -90 && !(o.hit && o.t));
 
   if (R.stageT >= DUR) {
-    R.phase = 'transition'; R.trT = 0; R.stamPts = Math.floor(R.stamina) * 2; R.tCount = 3;
-    R.holding = false; ptrs.clear(); SFX.transition();
+    R.stamPts = Math.floor(R.stamina) * 2; R.holding = false; ptrs.clear(); R.obs.length = 0;
+    if (R.mode === 'trail') { R.phase = 'tfinish'; R.finT = 0; SFX.victory(); pop('FINISH!', W / 2, 190, '#ffe66d', 56); }
+    else { R.phase = 'transition'; R.trT = 0; R.tCount = 3; SFX.transition(); }
   }
+}
+function updateTFinish(dt) {
+  R.finT += dt; R.spd = lerp(R.spd, 120, Math.min(1, 3 * dt)); R.trailPx += R.spd * dt; R.gateX -= R.spd * dt; R.p.ph += dt * 8;
+  if (R.finT >= 3.4) enterOver();
 }
 
 /* ======================================================================
@@ -416,8 +476,7 @@ function updateTransition(dt) {
   const n = Math.min(3, Math.ceil(TRANSITION_T - R.trT));
   if (n < R.tCount && n >= 1) { R.tCount = n; SFX.countdown(); }
   if (R.trT >= TRANSITION_T) {
-    R.phase = 'road'; R.stageT = 0; R.hintT = 0; R.rd = newRoad(); R.rd.holdPtrs = 0;
-    R.stamina = Math.min(100, R.stamina + 40); R.obs.length = 0; pops.length = 0; parts.length = 0; SFX.start();
+    beginRoad(true); SFX.start();
   }
 }
 
@@ -529,6 +588,7 @@ function updateRoad(dt, finishing) {
 
   // end of stage
   if (!finishing && R.stageT >= DUR) {
+    if (R.mode === 'road') R.stamPts = Math.floor(R.stamina) * 2;
     R.phase = 'finish'; R.finT = 0; R.finD0 = rd.d; rd.boostOn = false; ptrs.clear(); SFX.victory();
     pop('FINISH!', W / 2, 190, '#ffe66d', 56);
   }
@@ -543,16 +603,16 @@ function updateFinish(dt) {
    ====================================================================== */
 function enterOver() {
   const s = totalScore();
-  const q = s > 0 && (scores.length < 10 || s > scores[scores.length - 1].s);
+  const sc = scoresBy[R.mode], q = s > 0 && (sc.length < 10 || s > sc[sc.length - 1].s);
   let init = [0, 0, 0];
   const saved = lsGet(LS_INIT);
   if (saved && /^[A-Z]{3}$/.test(saved)) init = [...saved].map(ch => LETTERS.indexOf(ch));
   OV = {
-    s, q, pos: 0, init, t: 0, hl: null, mode: q ? 'entry' : 'board', br: {
+    rm: R.mode, s, q, pos: 0, init, t: 0, hl: null, mode: q ? 'entry' : 'board', br: {
       dist: Math.floor(distM()), jumps: R.jumps, jumpPts: Math.floor(R.jumpPts), sprint: Math.floor(R.sprintPts), draft: Math.floor(R.draftPts),
       over: R.overtakes, overPts: R.overPts, boost: Math.floor(R.boostPts), stam: R.stamPts, pen: R.penalty, best: R.bestCombo
     },
-    newBest: s > bestScore()
+    newBest: s > bestScore(R.mode)
   };
   mode = 'over'; paused = false;
 }
@@ -560,8 +620,8 @@ function submitInitials() {
   const name = OV.init.map(i => LETTERS[i]).join('');
   lsSet(LS_INIT, name);
   const entry = { n: name, s: OV.s, d: Date.now() };
-  scores.push(entry); scores.sort((a, b) => b.s - a.s); scores = scores.slice(0, 10);
-  saveScores(); OV.hl = entry; OV.mode = 'board'; OV.t = 0; SFX.confirm();
+  const rm = OV.rm; scoresBy[rm].push(entry); scoresBy[rm].sort((a, b) => b.s - a.s); scoresBy[rm] = scoresBy[rm].slice(0, 10);
+  saveScores(rm); OV.hl = entry; OV.mode = 'board'; OV.t = 0; SFX.confirm();
 }
 function overKey(c, key) {
   if (!OV || OV.t < 0.8) return;
@@ -574,10 +634,11 @@ function overKey(c, key) {
     else if (c === 'Enter' || c === 'NumpadEnter') submitInitials();
     else if (c === 'Space') { if (OV.pos < 2) { OV.pos++; SFX.move(); } else submitInitials(); }
     else if (/^[a-zA-Z]$/.test(key)) { OV.init[OV.pos] = LETTERS.indexOf(key.toUpperCase()); OV.pos = Math.min(2, OV.pos + 1); SFX.move(); }
-  } else if ((c === 'Enter' || c === 'Space') && OV.t > 0.5) { startGame(); }
+  } else if (c === 'Escape') quitToMenu();
+  else if ((c === 'Enter' || c === 'Space') && OV.t > 0.5) { startGame(OV.rm); }
 }
 const SLOT_X = [96, 180, 264];
-const OVB = { ok: { x: 100, y: 462, w: 170, h: 32 }, again: { x: W / 2 - 130, y: 498, w: 260, h: 34 } };
+const OVB = { ok: { x: 100, y: 462, w: 170, h: 32 }, again: { x: W / 2 - 270, y: 498, w: 260, h: 34 }, menu: { x: W / 2 + 10, y: 498, w: 260, h: 34 } };
 function overClick(p) {
   if (!OV || OV.t < 0.8) return;
   if (OV.mode === 'entry') {
@@ -590,7 +651,7 @@ function overClick(p) {
       }
     }
     if (inR(p, OVB.ok)) submitInitials();
-  } else if (OV.t > 0.5) startGame();
+  } else if (OV.t > 0.5) { if (inR(p, OVB.menu)) quitToMenu(); else if (inR(p, OVB.again)) startGame(OV.rm); }
 }
 
 /* ======================================================================
@@ -603,7 +664,7 @@ function update(dt) {
   for (const q of pops) q.t += dt;
   for (let i = pops.length - 1; i >= 0; i--) if (pops[i].t > 1.1) pops.splice(i, 1);
 
-  if (mode === 'title') { titleT += dt; return; }
+  if (mode === 'title' || mode === 'lb') { titleT += dt; return; }
   if (mode === 'over') { if (OV) OV.t += dt; return; }
   if (paused || !R) return;
 
@@ -617,6 +678,7 @@ function update(dt) {
   else if (R.phase === 'transition') updateTransition(dt);
   else if (R.phase === 'road') updateRoad(dt, false);
   else if (R.phase === 'finish') updateFinish(dt);
+  else if (R.phase === 'tfinish') updateTFinish(dt);
 
 }
 
@@ -885,7 +947,7 @@ function drawGantry(x, kind) {
    RENDER - HUD & SCREENS
    ====================================================================== */
 function drawHUD() {
-  const trail = R.phase === 'trail' || (R.phase === 'transition');
+  const trail = R.phase === 'trail' || R.phase === 'transition' || R.phase === 'tfinish';
   ctx.fillStyle = 'rgba(6,18,12,.62)'; ctx.fillRect(0, 0, W, 88);
   ctx.fillStyle = trail ? '#2e8b4f' : '#f2b705'; ctx.fillRect(0, 86, W, 2);
   // phase indicator
@@ -898,7 +960,7 @@ function drawHUD() {
   // timer
   const rem = Math.max(0, DUR - R.stageT);
   txt(String(Math.ceil(rem)).padStart(2, '0'), W / 2, 26, 34, rem < 10 ? '#ff7676' : '#fff', 'center', fM);
-  txt(trail ? 'STAGE 1/2' : 'STAGE 2/2', W / 2, 50, 11, '#cfe8d6', 'center', fM, false);
+  txt(R.mode === 'full' ? (trail ? 'STAGE 1/2' : 'STAGE 2/2') : 'SOLO RUN', W / 2, 50, 11, '#cfe8d6', 'center', fM, false);
   bar(W / 2 - 80, 58, 160, 8, R.stageT / DUR, trail ? '#46d07c' : '#ffd23f', trail ? '#a8f5c4' : '#fff1a6');
   // score
   txt(String(totalScore()).padStart(6, '0'), W - 18, 26, 32, '#ffe66d', 'right', fM);
@@ -911,7 +973,7 @@ function drawHUD() {
   txt(R.winded && R.phase === 'trail' ? 'WINDED - REST' : 'STAMINA', 26, 68.5, 12, '#fff', 'left', fM, true);
   txt(Math.ceil(R.stamina) + '%', 288, 68.5, 12, '#fff', 'right', fM, true);
   // right meter
-  if (R.phase === 'trail' || R.phase === 'transition') {
+  if (R.phase === 'trail' || R.phase === 'transition' || R.phase === 'tfinish') {
     txt(R.combo > 1 ? 'COMBO x' + R.combo : '', W - 18, 100, 18, '#ffe66d', 'right');
   } else {
     const rd = R.rd, ready = (DUR - R.stageT) <= BOOST_WINDOW;
@@ -952,7 +1014,7 @@ function hint(lines, a) {
 }
 
 function renderPlay() {
-  if (R.phase === 'trail' || R.phase === 'transition') {
+  if (R.phase === 'trail' || R.phase === 'transition' || R.phase === 'tfinish') {
     const scroll = R.trailPx;
     drawTrailScene(scroll);
     if (R.phase === 'trail' ? DUR - R.stageT < 5 : true) drawGantry(R.gateX, 'gate');
@@ -1056,6 +1118,7 @@ function renderOver() {
   // backdrop: slowly scrolling road/trail
   drawRoadScene(tNow * 120);
   ctx.fillStyle = 'rgba(4,14,9,.72)'; ctx.fillRect(0, 0, W, H);
+  txt(MODE_NAME[OV.rm], W / 2, 10, 12, '#7df9ff', 'center', fM, false);
   txt('GAME OVER', W / 2, 38, 40, '#ffe66d', 'center');
   txt('FINAL SCORE ' + String(OV.s).padStart(6, '0'), W / 2, 76, 22, '#fff', 'center', fM);
   if (OV.newBest && OV.s > 0) txt('NEW HIGH SCORE!', W / 2, 98, 15, Math.floor(tNow * 4) % 2 ? '#7df9ff' : '#ffe66d', 'center');
@@ -1093,18 +1156,22 @@ function renderOver() {
   // boards
   drawPanel(350, 110, 280, 380, 'TOP SCORES', '#ffd23f');
   txt('SIMULATED GLOBAL TOP 5', 490, 158, 11, '#cdb24b', 'center', fM, false);
-  drawBoard(368, 188, 244, globalBoard(), OV.hl, 30, 17);
+  drawBoard(368, 188, 244, globalBoard(OV.rm), OV.hl, 30, 17);
   txt('YOUR BEST', 490, 346, 12, '#cdb24b', 'center', fM, false);
-  txt(String(Math.max(bestScore(), 0)).padStart(6, '0'), 490, 376, 30, '#fff', 'center', fM);
+  txt(String(bestScore(OV.rm)).padStart(6, '0'), 490, 376, 30, '#fff', 'center', fM);
   txt('Saved on this device', 490, 408, 11, '#9fb8a8', 'center', fM, false);
   drawPanel(650, 110, 270, 380, 'LOCAL TOP 10', '#46d07c');
-  drawBoard(666, 148 + 12, 238, scores, OV.hl, 30, 15);
-  // play again
+  drawBoard(666, 160, 238, scoresBy[OV.rm], OV.hl, 30, 15);
+  // play again / menu
   if (OV.mode === 'board') {
-    const r = OVB.again, pulse = 0.75 + 0.25 * Math.sin(tNow * 6);
-    ctx.globalAlpha = OV.t > 0.5 ? 1 : 0.4; ctx.fillStyle = '#e63946'; rr(r.x, r.y, r.w, r.h, 17); ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,' + pulse + ')'; ctx.lineWidth = 3; ctx.stroke();
-    txt('PLAY AGAIN  (ENTER)', r.x + r.w / 2, r.y + r.h / 2 + 1, 15, '#fff', 'center', fH, false); ctx.globalAlpha = 1;
+    const pulse = 0.75 + 0.25 * Math.sin(tNow * 6);
+    ctx.globalAlpha = OV.t > 0.5 ? 1 : 0.4;
+    [['again', 'PLAY AGAIN (ENTER)', '#e63946'], ['menu', 'MAIN MENU (ESC)', '#2a6fdb']].forEach(([k, label, col]) => {
+      const r = OVB[k]; ctx.fillStyle = col; rr(r.x, r.y, r.w, r.h, 17); ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,' + pulse + ')'; ctx.lineWidth = 3; ctx.stroke();
+      txt(label, r.x + r.w / 2, r.y + r.h / 2 + 1, 15, '#fff', 'center', fH, false);
+    });
+    ctx.globalAlpha = 1;
   } else txt('↑↓ letter   ←→ slot   ENTER confirm   or type A-Z', W / 2, 515, 12, '#9fb8a8', 'center', fM, false);
   drawMuteIcon();
 }
@@ -1133,14 +1200,37 @@ function renderTitle() {
   ctx.fillStyle = 'rgba(6,18,12,.78)'; rr(W - px - pw, 222, pw, 150, 12); ctx.fill(); ctx.strokeStyle = '#f2b705'; ctx.stroke();
   txt('2  ROAD CYCLING', W - px - pw + 18, 246, 17, '#ffd23f', 'left');
   ['TAP SPACE / ← → : pedal  (hold = steady)', '↑ ↓ : change lane', 'DRAFT behind rivals: save stamina', 'SHIFT: breakaway in the final 15s'].forEach((l, i) => txt(l, W - px - pw + 18, 277 + i * 22, 13, '#fff', 'left', fM, false));
-  // prompt
-  const on = Math.floor(titleT * 2.2) % 2 === 0;
-  if (on) txt(touchSeen ? 'TAP TO START' : 'PRESS SPACE OR TAP TO START', W / 2, 410, 28, '#ffe66d', 'center');
-  // top scores
-  txt('HI SCORE ' + String(bestScore()).padStart(6, '0'), W / 2, 452, 18, '#fff', 'center', fM);
-  const top = globalBoard().slice(0, 3).map((e, i) => (i + 1) + '.' + e.n + ' ' + e.s).join('    ');
-  txt(top, W / 2, 482, 13, '#cfe8d6', 'center', fM, false);
-  txt('M : sound   P : pause', W / 2, 512, 12, '#9fb8a8', 'center', fM, false);
+  // menu
+  MENU.forEach((m, i) => {
+    const r = menuRect(i), sel = i === menuSel;
+    if (sel) { ctx.fillStyle = 'rgba(230,57,70,.9)'; rr(r.x, r.y, r.w, r.h, 13); ctx.fill(); ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 2; ctx.stroke(); }
+    else { ctx.fillStyle = 'rgba(6,18,12,.6)'; rr(r.x, r.y, r.w, r.h, 13); ctx.fill(); }
+    txt((sel ? '> ' : '') + m.t, W / 2, r.y + r.h / 2 + 1, 17, sel ? '#fff' : '#cfe8d6', 'center');
+  });
+  txt('↑↓ + ENTER or TAP  |  1-4 quick select  |  M sound  |  P pause', W / 2, 512, 12, '#9fb8a8', 'center', fM, false);
+  drawMuteIcon();
+}
+
+function renderLB() {
+  drawRoadScene(tNow * 100);
+  ctx.fillStyle = 'rgba(4,14,9,.78)'; ctx.fillRect(0, 0, W, H);
+  txt('LEADERBOARDS', W / 2, 30, 32, '#ffe66d', 'center');
+  const cols = ['#ffd23f', '#46d07c', '#2aa9ff'];
+  MODES.forEach((m, i) => {
+    const r = LBT(i), act = i === lbTab;
+    ctx.fillStyle = act ? cols[i] : 'rgba(255,255,255,.1)'; rr(r.x, r.y, r.w, r.h, 17); ctx.fill();
+    ctx.strokeStyle = cols[i]; ctx.lineWidth = 2; ctx.stroke();
+    txt(MODE_NAME[m], r.x + r.w / 2, r.y + r.h / 2 + 1, 15, act ? '#12141a' : '#fff', 'center', fH, false);
+  });
+  const m = MODES[lbTab];
+  drawPanel(60, 112, 400, 366, 'GLOBAL TOP 5', cols[lbTab]);
+  txt('SIMULATED - ' + MODE_NAME[m], 260, 156, 11, '#cdb24b', 'center', fM, false);
+  drawBoard(100, 196, 320, globalBoard(m), null, 40, 20);
+  drawPanel(500, 112, 400, 366, 'LOCAL TOP 10', cols[lbTab]);
+  drawBoard(540, 176, 320, scoresBy[m], null, 30, 16);
+  const r = LB_BACK; ctx.fillStyle = '#e63946'; rr(r.x, r.y, r.w, r.h, 17); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+  txt('BACK (ESC)', r.x + r.w / 2, r.y + r.h / 2 + 1, 15, '#fff', 'center', fH, false);
+  txt('← → or tap a tab', 140, 509, 12, '#9fb8a8', 'center', fM, false);
   drawMuteIcon();
 }
 
@@ -1150,13 +1240,20 @@ function render() {
   ctx.save();
   if (shake > 0) ctx.translate(rand(-shake, shake) * 0.5, rand(-shake, shake) * 0.5);
   if (mode === 'title') renderTitle();
+  else if (mode === 'lb') renderLB();
   else if (mode === 'over' && OV) renderOver();
   else if (R) {
     renderPlay(); ctx.restore(); ctx.save(); renderOverlays();
     if (paused) {
       ctx.fillStyle = 'rgba(4,14,9,.75)'; ctx.fillRect(0, 0, W, H);
-      txt('PAUSED', W / 2, 220, 56, '#ffe66d', 'center');
-      txt('PRESS P / SPACE OR TAP TO RESUME', W / 2, 280, 18, '#fff', 'center', fM);
+      txt('PAUSED', W / 2, 200, 56, '#ffe66d', 'center');
+      PAUSE_ITEMS.forEach((t, i) => {
+        const r = pauseRect(i), sel = i === pauseSel;
+        ctx.fillStyle = sel ? '#e63946' : 'rgba(255,255,255,.12)'; rr(r.x, r.y, r.w, r.h, 20); ctx.fill();
+        ctx.strokeStyle = sel ? '#fff' : 'rgba(255,255,255,.4)'; ctx.lineWidth = 2; ctx.stroke();
+        txt(t, W / 2, r.y + r.h / 2 + 1, 18, '#fff', 'center');
+      });
+      txt('↑↓ + ENTER  |  P resume  |  Q quit to menu', W / 2, 440, 13, '#cfe8d6', 'center', fM, false);
     }
   }
   ctx.restore();
